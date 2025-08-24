@@ -1,10 +1,32 @@
+// api/sms.js
+// Vercel serverless Twilio SMS webhook with Upstash Redis
+// - Whitelisted numbers: always reply with password (no cooldown/caps)
+// - Unknown numbers: cooldown + per-number/day + global/day caps
+// - Optional keyword gate via REQUIRE_KEYWORD env (applies to everyone)
+// - STOP/HELP compliance
+//
+// Env vars to set in Vercel (and .env for local):
+//   UPSTASH_REDIS_REST_URL
+//   UPSTASH_REDIS_REST_TOKEN
+//   SITE_PASSWORD=YourWeddingPassword
+//   REQUIRE_KEYWORD=PASSWORD           (optional; leave empty to disable)
+//   MIN_REPLY_COOLDOWN_MIN=3           (optional; unknowns only)
+//   MAX_PER_NUMBER_PER_DAY=3           (optional; unknowns only)
+//   GLOBAL_MAX_PER_DAY=2000            (optional; all replies counted)
+//
+// Twilio number -> Messaging Webhook (POST):
+//   https://<your-app>.vercel.app/api/sms
+//
+// Add guests in Upstash Console (Redis):
+//   SADD whitelist +15551234567 +15557654321
+// Remove guests in Upstash Console (Redis):
+//   SREM whitelist +15557654321
+
 import {twiml as TwiML} from 'twilio';
 import {Redis} from '@upstash/redis';
 
-// Upstash Redis client (Vercel pulls env automatically)
 const redis = Redis.fromEnv();
 
-// env
 const SITE_PASSWORD = process.env.SITE_PASSWORD || 'PASSWORD';
 const MIN_REPLY_COOLDOWN_MIN = parseInt(
     process.env.MIN_REPLY_COOLDOWN_MIN ?? '3',
@@ -18,19 +40,20 @@ const GLOBAL_MAX_PER_DAY = parseInt(
     process.env.GLOBAL_MAX_PER_DAY ?? '2000',
     10
 );
-const REQUIRE_KEYWORD = (process.env.REQUIRE_KEYWORD || '').toUpperCase(); // e.g. "PASSWORD"
+const REQUIRE_KEYWORD = (process.env.REQUIRE_KEYWORD || '').toUpperCase();
 
 function dayKey(date = new Date()) {
+    // Use local-day boundary by removing TZ offset from ISO date
     return new Date(date.getTime() - date.getTimezoneOffset() * 60000)
         .toISOString()
-        .slice(0, 10);
+        .slice(0, 10); // YYYY-MM-DD
 }
 
 export default async function handler(req, res) {
     if (req.method !== 'POST')
         return res.status(405).send('Method Not Allowed');
 
-    // Parse Twilio's urlencoded body
+    // Parse application/x-www-form-urlencoded (Twilio default)
     const rawBody = await new Promise((resolve) => {
         let data = '';
         req.on('data', (chunk) => (data += chunk));
@@ -45,7 +68,7 @@ export default async function handler(req, res) {
 
     const twiml = new TwiML.MessagingResponse();
 
-    // STOP/HELP compliance
+    // --- STOP/HELP compliance (keeps your number healthy) ---
     if (upper.includes('STOP')) {
         twiml.message(
             'You’re opted out and won’t receive messages. Reply START to opt back in.'
@@ -59,12 +82,33 @@ export default async function handler(req, res) {
         return res.status(200).send(twiml.toString());
     }
 
-    // Keyword gate (optional, saves $$)
+    // --- Optional keyword gate (applies to everyone) ---
     if (REQUIRE_KEYWORD && !upper.includes(REQUIRE_KEYWORD)) {
+        // No reply = no outbound SMS cost
         return res.status(204).end();
     }
 
-    // --- Rate limits ---
+    // --- Whitelist check FIRST (guests bypass throttles) ---
+    const isWhitelisted = await redis.sismember('whitelist', from);
+
+    if (isWhitelisted) {
+        // Always reply to guests; do NOT count toward per-number throttles
+        twiml.message(
+            `Hi! Here’s password to robyn-kingsley.wedding: ${SITE_PASSWORD}`
+        );
+
+        // You may still want a global cap to protect budget even for guests.
+        // If you want to enforce GLOBAL_MAX_PER_DAY across all replies, uncomment below.
+        // const globalKey = `rl:global:${today}`;
+        // const current = (await redis.get(globalKey)) ?? 0;
+        // if (current >= GLOBAL_MAX_PER_DAY) return res.status(204).end();
+        // await Promise.all([redis.incr(globalKey), redis.expire(globalKey, 172800)]);
+
+        res.setHeader('Content-Type', 'text/xml');
+        return res.status(200).send(twiml.toString());
+    }
+
+    // --- Unknown numbers: apply throttles + global cap ---
     const globalKey = `rl:global:${today}`;
     const countKey = `rl:num:${from}:${today}:count`;
     const lastKey = `rl:num:${from}:${today}:last`;
@@ -74,36 +118,29 @@ export default async function handler(req, res) {
         countKey,
         lastKey
     );
+
+    // Global cap (across everyone; protects budget)
     if ((globalCount ?? 0) >= GLOBAL_MAX_PER_DAY) return res.status(204).end();
 
+    // Per-number cooldown + cap (unknowns only)
     const now = Date.now();
     const last = parseInt(lastMs ?? '0', 10);
     const minMillis = MIN_REPLY_COOLDOWN_MIN * 60 * 1000;
     if (last && now - last < minMillis) return res.status(204).end();
-
     if ((numberCount ?? 0) >= MAX_PER_NUMBER_PER_DAY)
         return res.status(204).end();
 
-    // --- Whitelist check ---
-    // Manage whitelist via Upstash console:
-    //   SADD whitelist +15551234567 +15557654321
-    const isWhitelisted = await redis.sismember('whitelist', from);
+    // Fallback for unknowns
+    twiml.message(
+        'We couldn’t match this number to our guest list. If this is a mistake, please contact Kingsley'
+    );
 
-    if (isWhitelisted) {
-        twiml.message(
-            `Thanks! Here’s the wedding site password: ${SITE_PASSWORD}`
-        );
-    } else {
-        twiml.message(
-            'We couldn’t match this number to our guest list. If this is a mistake, please text back your full name. 💌'
-        );
-    }
-
-    // record reply
+    // Record cost-bearing reply for throttling (unknowns only)
     await Promise.all([
         redis.incr(globalKey),
         redis.incr(countKey),
         redis.set(lastKey, String(now)),
+        // 2-day expiry cleans up old counters automatically
         redis.expire(globalKey, 172800),
         redis.expire(countKey, 172800),
         redis.expire(lastKey, 172800),
