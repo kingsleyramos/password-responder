@@ -1,0 +1,25 @@
+{
+  "name": "password-responder",
+  "version": "1.0.0",
+  "description": "Respond to a phone number with the password",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kingsleyramos/password-responder.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/kingsleyramos/password-responder/issues"
+  },
+  "homepage": "https://github.com/kingsleyramos/password-responder#readme",
+  "dependencies": {
+    "@upstash/redis": "^1.35.3",
+    "twilio": "^5.8.0"
+  }
+}
