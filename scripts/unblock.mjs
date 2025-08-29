@@ -9,7 +9,7 @@
 //   3) SCAN+DEL burst:<phone>:* (any burst counters)
 //
 // Usage:
-//   node scripts/unblock.mjs 5551234567
+//   node scripts/unblock.mjs 6195732332
 //
 // | Example Input    | What the script sees (after stripping)   | Normalized Output |
 // | ---------------- | ---------------------------------------- | ----------------- |
@@ -23,16 +23,14 @@
 // | `+15551234567`   | Already in E.164                         | `+15551234567`    |
 
 import 'dotenv/config';
-import {Redis} from '@upstash/redis';
+import {redis} from '../lib/redis.js';
 import {KEYS} from '../lib/config.js';
-
-const redis = Redis.fromEnv();
 
 function normalizeToE164US(input) {
     if (!input) throw new Error('No phone number provided');
     const trimmed = String(input).trim();
 
-    // Already looks like +1XXXXXXXXXX?
+    // Already E.164?
     if (/^\+1\d{10}$/.test(trimmed)) return trimmed;
 
     // Strip non-digits
@@ -41,12 +39,47 @@ function normalizeToE164US(input) {
     // 10 digits -> assume US, add +1
     if (digits.length === 10) return `+1${digits}`;
 
-    // 11 digits starting with 1 -> add leading +
+    // 11 digits starting with 1 -> add +
     if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
 
     throw new Error(
         `Invalid US number format: "${input}". Expected 10 digits, 11 digits starting with 1, or +1XXXXXXXXXX.`
     );
+}
+
+// Delete keys matching a pattern, supporting both scanIterator (new) and SCAN loop (old)
+async function deleteByPattern(pattern, count = 200) {
+    let deleted = 0;
+
+    if (typeof redis.scanIterator === 'function') {
+        // Newer client: async iterator
+        for await (const key of redis.scanIterator({match: pattern, count})) {
+            await redis.del(key);
+            deleted++;
+        }
+        return deleted;
+    }
+
+    // Fallback: manual SCAN pagination
+    let cursor = 0;
+    do {
+        const resp = await redis.scan(cursor, {match: pattern, count});
+        // Upstash returns [nextCursor, keys[]]
+        const nextCursor =
+            typeof resp?.[0] !== 'undefined' ? Number(resp[0]) : 0;
+        const keys = Array.isArray(resp?.[1]) ? resp[1] : [];
+
+        if (keys.length) {
+            // Delete sequentially (safe). You could batch/pipeline if desired.
+            for (const k of keys) {
+                await redis.del(k);
+                deleted++;
+            }
+        }
+        cursor = nextCursor;
+    } while (cursor !== 0);
+
+    return deleted;
 }
 
 async function unblock(phoneE164) {
@@ -56,24 +89,19 @@ async function unblock(phoneE164) {
     // 2) Remove per-number throttle hash
     await redis.del(`${KEYS.PER_NUMBER_HASH_PREFIX}${phoneE164}`);
 
-    // 3) Remove any burst counters
-    let burstDeleted = 0;
-    for await (const key of redis.scanIterator({
-        match: `${KEYS.BURST_PREFIX}${phoneE164}:*`,
-        count: 200,
-    })) {
-        await redis.del(key);
-        burstDeleted++;
-    }
+    // 3) Remove any burst counters (supports old/new client)
+    const burstDeleted = await deleteByPattern(
+        `${KEYS.BURST_PREFIX}${phoneE164}:*`,
+        200
+    );
 
-    // Result message
     if (removed) {
         console.log(
-            `✅ Unblocked ${phoneE164} — removed from "${KEYS.ABUSE_SET}", deleted throttle hash, burstDeleted=${burstDeleted}`
+            `✅ Unblocked ${phoneE164}: removed from "${KEYS.ABUSE_SET}", cleared throttle hash, burstDeleted=${burstDeleted}`
         );
     } else {
         console.log(
-            `ℹ️ ${phoneE164} was not present in "${KEYS.ABUSE_SET}". Throttle hash cleared, burstDeleted=${burstDeleted}`
+            `ℹ️ ${phoneE164} not found in "${KEYS.ABUSE_SET}". Cleared counters anyway (burstDeleted=${burstDeleted}).`
         );
     }
 }
@@ -86,6 +114,7 @@ async function unblock(phoneE164) {
             process.exit(1);
         }
         const phone = normalizeToE164US(arg);
+        console.log(`Normalizing → ${phone}`);
         await unblock(phone);
         process.exit(0);
     } catch (err) {

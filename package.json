@@ -5,7 +5,7 @@
     "main": "index.js",
     "scripts": {
         "test": "echo \"Error: no test specified\" && exit 1",
-        "unblock": "node scripts/unblock.js"
+        "unblock": "node scripts/unblock.mjs"
     },
     "repository": {
         "type": "git",
@@ -14,13 +14,14 @@
     "keywords": [],
     "author": "",
     "license": "ISC",
-    "type": "commonjs",
+    "type": "module",
     "bugs": {
         "url": "https://github.com/kingsleyramos/password-responder/issues"
     },
     "homepage": "https://github.com/kingsleyramos/password-responder#readme",
     "dependencies": {
         "@upstash/redis": "^1.35.3",
+        "dotenv": "^17.2.1",
         "twilio": "^5.8.0"
     },
     "devDependencies": {
