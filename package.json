@@ -14,7 +14,7 @@
     "keywords": [],
     "author": "",
     "license": "ISC",
-    "type": "module",
+    "type": "commonjs",
     "bugs": {
         "url": "https://github.com/kingsleyramos/password-responder/issues"
     },
