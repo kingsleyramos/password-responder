@@ -56,7 +56,7 @@ export default async function handler(req, res) {
     try {
         if (!ADMIN_TOKEN) {
             console.error(`[${reqId}] Missing ADMIN_UNBLOCK_TOKEN env`);
-            return res.status(401).json({ok: false, error: 'Unauthorized'});
+            return res.status(401).send('Unauthorized');
         }
 
         const isGet = req.method === 'GET';
@@ -92,11 +92,11 @@ export default async function handler(req, res) {
             console.warn(
                 `[${reqId}] Unauthorized attempt with token="${tokenParam}"`
             );
-            return res.status(401).json({ok: false, error: 'Unauthorized'});
+            return res.status(401).send('Unauthorized');
         }
         if (!phoneParam) {
             console.warn(`[${reqId}] Missing ?phone param`);
-            return res.status(400).json({ok: false, error: 'Missing ?phone'});
+            return res.status(400).json({error: 'Missing ?phone'});
         }
 
         const phone = normalizeToE164US(phoneParam);
