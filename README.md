@@ -1,233 +1,188 @@
-# SMS Password Responder
+# 📱 Wedding Password Auto Responder
 
-A tiny serverless webhook that auto-replies to incoming SMS with your wedding website (or for anything) password **only for whitelisted guests**. Unknown numbers get a polite fallback. Includes spam/cost controls and opt-out handling.
+A lightweight SMS auto-responder built with **Twilio**, **Vercel Serverless Functions**, and **Upstash Redis**.  
+Guests text your wedding number to receive the website password.
 
-- **Runtime**: Vercel Serverless (Node.js)
-- **SMS**: Twilio (US/CA)
-- **Database**: Upstash Redis (free tier)
-- **Features**:
-  - Whitelist check (managed in Redis)
-  - Optional keyword gate (e.g., require texting “PASSWORD”)
-  - STOP/HELP compliance
-  - Rate limits for **unknown** numbers only (cooldown, per-day cap, global cap)
-  - Minimal cost: most traffic generates **no charge** unless you reply
+-   ✅ Whitelisted numbers always get the password
+-   ✅ Unknown numbers get fallback reply (with cooldowns & caps)
+-   ✅ STOP/START/HELP compliance built-in
+-   ✅ Spam/abuse protection + permanent blocklist
+-   ✅ Admin tools to unblock numbers via script or URL
 
 ---
 
-## Architecture
+## 🚀 Features
+
+-   **Node.js + Vercel**: serverless deployment (cheap/free for low traffic).
+-   **Twilio SMS Webhook**: connects to your Twilio number.
+-   **Redis (Upstash)**: stores whitelist, opt-outs, throttles, and blocklist.
+-   **Throttling**: per-number daily cap, per-number cooldown, global/day cap.
+-   **Abuse Guards**:
+    -   Block non-US numbers
+    -   Burst detection (too many messages in a short window)
+    -   Global flood breaker
+    -   Content sanity (URLs, >160 chars)
+-   **Admin Tools**:
+    -   Local unblock script (`scripts/unblock.mjs`)
+    -   Admin API (`/api/admin/unblock`) with token auth
+
+---
+
+## 🛠 Setup
+
+### 1. Twilio
+
+-   Buy a local or toll-free number in [Twilio Console](https://console.twilio.com/).
+-   In **Messaging → Webhook**, set:
 
 ```
-
-Guest phone ──► Twilio Number ──► Webhook (Vercel /api/sms)
-│
-└──► Upstash Redis (whitelist + rate-limit counters)
-
+https\://<your-vercel-app>.vercel.app/api/sms
 ```
 
----
+### 2. Vercel
 
-## 1) Prerequisites
+-   Deploy this repo to Vercel.
+-   Add Environment Variables (Project → Settings → Environment Variables):
 
-- Twilio account + a phone number capable of SMS
-- Vercel account (Hobby/free)
-- Upstash Redis database (free)
-- Node.js 18+ locally (for setup/testing)
+| Name                       | Required | Example                |
+| -------------------------- | -------- | ---------------------- |
+| `UPSTASH_REDIS_REST_URL`   | ✅       | (from Upstash console) |
+| `UPSTASH_REDIS_REST_TOKEN` | ✅       | (from Upstash console) |
+| `SITE_PASSWORD`            | ✅       | MyWedding2026          |
+| `REQUIRED_TEXT_KEYWORD`    | Optional | PASSWORD               |
+| `HELP_MESSAGE`             | Optional | Custom HELP text       |
+| `MIN_REPLY_COOLDOWN_MIN`   | Optional | 3                      |
+| `MAX_PER_NUMBER_PER_DAY`   | Optional | 3                      |
+| `GLOBAL_MAX_PER_DAY`       | Optional | 2000                   |
+| `ADMIN_UNBLOCK_TOKEN`      | ✅       | random-secret-string   |
 
----
+### 3. Redis (Upstash)
 
-## 2) Quick Start (Deployment First)
-
-1. **Fork/clone** this repo to your GitHub.
-2. **Create** an Upstash Redis DB → note your **REST URL** and **REST TOKEN**.
-3. **Deploy to Vercel** (Import GitHub repo).
-4. In **Vercel → Project → Settings → Environment Variables**, add:
-
-```
-
-UPSTASH\_REDIS\_REST\_URL=...        # from Upstash
-UPSTASH\_REDIS\_REST\_TOKEN=...      # from Upstash
-SITE\_PASSWORD=YourWeddingPassword
-REQUIRE\_KEYWORD=PASSWORD          # optional; delete to disable
-MIN\_REPLY\_COOLDOWN\_MIN=3          # unknown numbers only
-MAX\_PER\_NUMBER\_PER\_DAY=3          # unknown numbers only
-GLOBAL\_MAX\_PER\_DAY=2000           # applies to unknowns; can extend to all if desired
-
-````
-
-5. **Seed whitelist** in Upstash Console:
-```bash
-SADD whitelist +15551234567 +15557654321
-````
-
-(Use **E.164** format, e.g., `+1xxxxxxxxxx`.)
-
-6. In **Twilio Console → Phone Numbers → Your Number → Messaging**:
-
-   * **A MESSAGE COMES IN** → **Webhook** (POST) →
-     `https://<your-vercel-app>.vercel.app/api/sms`
-   * **Content Type**: `application/x-www-form-urlencoded`
-   * (Optional) Enable **Advanced Opt-Out**.
-
-7. **Test**: text from a whitelisted number (and from a non-whitelisted number).
-
----
-
-## 3) Local Development (Optional)
-
-If you want to run locally before deploying:
+-   Create a free Redis DB at [Upstash](https://upstash.com/).
+-   Add **guest numbers** to the whitelist:
 
 ```bash
-git clone <your-fork>
-cd <repo>
-npm install
+# Add
+redis-cli SADD whitelist +15551234567 +15559876543
+
+# Remove
+redis-cli SREM whitelist +15559876543
 ```
-
-Create `.env` (don’t commit it):
-
-```bash
-UPSTASH_REDIS_REST_URL=...
-UPSTASH_REDIS_REST_TOKEN=...
-SITE_PASSWORD=YourWeddingPassword
-REQUIRE_KEYWORD=PASSWORD
-MIN_REPLY_COOLDOWN_MIN=3
-MAX_PER_NUMBER_PER_DAY=3
-GLOBAL_MAX_PER_DAY=2000
-```
-
-> For Vercel serverless routes, local “serve” isn’t required. If you want to test with Twilio live, use an Express dev server + `ngrok` or deploy and test on Vercel directly.
 
 ---
 
-## 4) Files
+## 📂 Project Structure
 
 ```
 api/
-  sms.js          # webhook handler
-package.json
-(vercel.json)     # optional, to pin runtime
+  sms.js                # Twilio webhook (main logic)
+  admin/unblock.js      # Admin API endpoint for unblocking
+
+lib/
+  config.js             # Centralized config + constants
+  redis.js              # Redis client
+  utils.js              # helpers (form parser, dayKey)
+  optout.js             # STOP/START logic
+  abuse.js              # Abuse guards + blocklist
+  throttle.js           # Per-number throttling
+
+scripts/
+  unblock.mjs           # CLI script to unblock a number
 ```
 
-* **api/sms.js** (highlights):
+---
 
-  * Parses Twilio’s `x-www-form-urlencoded` body
-  * Handles `STOP` and `HELP`
-  * Optional `REQUIRE_KEYWORD` gate
-  * Checks **whitelist first** → whitelisted numbers always get the password (no throttle)
-  * Unknown numbers hit cooldown + per-day + global caps
-  * Stores counters in Redis with 2-day expirations
+## 🔐 Opt-Out / Compliance
+
+-   **STOP** → number added to `optout` + Twilio carrier-level block
+-   **START/UNSTOP/YES** → clears opt-out
+-   **HELP** → returns custom HELP message
+-   If a number is opted-out at carrier level, they **must** text `START` to re-enable delivery.
 
 ---
 
-## 5) Environment Variables
+## 🔒 Abuse Protection
 
-| Name                       | Required | Default    | Notes                                                                      |
-| -------------------------- | -------- | ---------- | -------------------------------------------------------------------------- |
-| `UPSTASH_REDIS_REST_URL`   | Yes      | —          | From Upstash console                                                       |
-| `UPSTASH_REDIS_REST_TOKEN` | Yes      | —          | From Upstash console                                                       |
-| `SITE_PASSWORD`            | Yes      | `PASSWORD` | What you want to send to guests                                            |
-| `REQUIRE_KEYWORD`          | No       | *(empty)*  | If set (e.g. `PASSWORD`), only messages containing that word are processed |
-| `MIN_REPLY_COOLDOWN_MIN`   | No       | `3`        | Per-number cooldown for **unknown** numbers                                |
-| `MAX_PER_NUMBER_PER_DAY`   | No       | `3`        | Per-number daily cap for **unknown** numbers                               |
-| `GLOBAL_MAX_PER_DAY`       | No       | `2000`     | Global daily cap across replies to **unknowns** (can be extended to all)   |
-
-> If you want the global cap to apply to whitelisted guests too, there’s a commented snippet in `api/sms.js` you can enable.
+-   **Non-US filter**: only accepts `+1XXXXXXXXXX`.
+-   **Burst guard**: >5 messages in 60s → permanently blocked.
+-   **Flood guard**: >20 unknown messages in 5 minutes → triggers defensive mode.
+-   **Content sanity**: URLs or >160 chars → suspicious, repeat offenders permanently blocked.
+-   **Permanent blocklist**: stored in `abuse:index`.
 
 ---
 
-## 6) Managing the Whitelist
+## 🔧 Admin Tools
 
-Use the Upstash Console:
+### Local unblock script
 
 ```bash
-# Add guests
-SADD whitelist +15551234567 +15557654321
-
-# Remove a guest
-SREM whitelist +15551234567
-
-# Check membership
-SISMEMBER whitelist +15551234567
-
-# List all (debug; for large sets use SCAN)
-SMEMBERS whitelist
+node scripts/unblock.mjs 555-123-4567
 ```
 
-All changes take effect immediately—no redeploy needed.
+-   Normalizes input (`5551234567`, `(555) 123-4567`, `+15551234567` → all accepted).
+-   Removes from blocklist, clears counters.
+
+### Admin API
+
+```bash
+GET https://<your-app>.vercel.app/api/admin/unblock?phone=5551234567&token=YOUR_TOKEN
+```
+
+-   Requires `ADMIN_UNBLOCK_TOKEN` env var.
+-   Normalizes phone input.
+-   Logs all actions to Vercel.
+-   Returns JSON result:
+
+```json
+{
+    "ok": true,
+    "phone": "+15551234567",
+    "removedFromBlocklist": true,
+    "burstDeleted": 1,
+    "note": "If the user texted STOP, carriers still require START."
+}
+```
+
+**Tip:** Prefer POST to keep token out of logs:
+
+```bash
+curl -X POST "https://<your-app>.vercel.app/api/admin/unblock" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "phone=5551234567" \
+  --data-urlencode "token=YOUR_TOKEN"
+```
 
 ---
 
-## 7) Compliance & Consent
+## 📝 Development
 
-Carriers require clear consent for A2P messaging:
+Run locally with Vercel dev:
 
-* Display a one-liner wherever you share the number (your website, invite):
+```bash
+vercel dev
+```
 
-  > “Text **PASSWORD** to (###) ###-#### to receive our wedding website password. By texting, you consent to an automated SMS reply. Msg & data rates may apply. Reply STOP to opt out.”
+Test SMS locally with cURL (simulating Twilio):
 
-* You already handle **STOP/HELP** in code.
-
-* Keep a screenshot of where this disclosure appears (proof of consent).
-
----
-
-## 8) Costs
-
-* Twilio number: \~**\$1/mo**
-* SMS: \~**\$0.0075–\$0.01** per message (inbound/outbound, US)
-* Vercel Hobby: **\$0**
-* Upstash Redis: **\$0** (free tier)
-* With a few hundred guests, total spend is typically **under \$10**.
+```bash
+curl -X POST "http://localhost:3000/api/sms" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "From=+15551234567" \
+  --data-urlencode "Body=PASSWORD"
+```
 
 ---
 
-## 9) Troubleshooting
+## 💡 Notes
 
-* **No reply received**
-
-  * Twilio Console → **Monitor → Logs → Messaging** to view webhook status/errors.
-  * Verify webhook URL, **POST**, and content type is `application/x-www-form-urlencoded`.
-  * Ensure env vars are set in Vercel and you redeployed.
-
-* **Message says “keyword required” behavior**
-
-  * If `REQUIRE_KEYWORD` is set (e.g., `PASSWORD`), your text must contain that word. Remove or clear the env var to disable.
-
-* **Rate limits hit too often**
-
-  * Increase `MIN_REPLY_COOLDOWN_MIN` or `MAX_PER_NUMBER_PER_DAY` (unknowns only).
-  * Raise or lower `GLOBAL_MAX_PER_DAY` as needed.
-
-* **Twilio wants “proof of consent”**
-
-  * Add the disclosure text to your site/invite.
-  * Keep STOP/HELP logic.
-  * Describe your opt-in collection in Twilio’s form (guests initiate by texting).
-
-* **Calls to the number**
-
-  * In **Twilio → Phone Numbers → Voice**, set “A CALL COMES IN” to a TwiML Bin with `<Hangup/>` or attach no action. Or purchase an SMS-only number.
+-   Redis keys auto-expire, keeping storage lean.
+-   Blocklist (`abuse:index`) persists until you explicitly remove numbers.
+-   Even if you unblock a number, if they texted STOP to Twilio, carriers still require `START`.
+-   Rotate your `ADMIN_UNBLOCK_TOKEN` after the event (e.g., after the wedding).
 
 ---
 
-## 10) Security (Optional)
+## 🎉 Use Case
 
-* **Signature Validation**: You can validate `X-Twilio-Signature` with your Twilio **Auth Token** to ensure only Twilio hits your webhook. This requires a fixed public URL; add later if needed.
-
----
-
-## 11) FAQ
-
-**Q: Can I keep my guest list in Google Sheets?**
-A: Yes. This build uses Redis for speed/simplicity, but you could fetch from Sheets on each request or on a timer and mirror into Redis.
-
-**Q: Can whitelisted guests bypass the keyword gate?**
-A: Currently, the keyword gate applies to everyone. Move that check into the “unknown” branch if you want guests to bypass it.
-
-**Q: Can I silence unknown numbers (no reply at all)?**
-A: Yes. Replace the fallback reply with `return res.status(204).end();` to avoid any outbound SMS cost for unknowns.
-
----
-
-### Credits
-
-Built with ❤️ for a stress-free, low-cost wedding password flow.
+This setup was designed for a wedding website:
+Guests text a number → receive password → easy, fun, compliant, and spam-resistant.
