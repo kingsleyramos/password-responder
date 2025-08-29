@@ -1,4 +1,3 @@
-/* eslint-disable no-process-env */
 // api/sms.js
 // Vercel serverless Twilio SMS webhook with Upstash Redis
 // - Whitelisted numbers: always reply with password (no cooldown/caps)
@@ -25,42 +24,22 @@
 
 // api/sms.js — with verbose logging for Vercel
 import {twiml as TwiML} from 'twilio';
-import {Redis} from '@upstash/redis';
-
-const redis = Redis.fromEnv();
-
-// --- Config (env) ---
-const SITE_PASSWORD = process.env.SITE_PASSWORD || 'PASSWORD';
-const MIN_REPLY_COOLDOWN_MIN = parseInt(
-    process.env.MIN_REPLY_COOLDOWN_MIN ?? '3',
-    10
-);
-const MAX_PER_NUMBER_PER_DAY = parseInt(
-    process.env.MAX_PER_NUMBER_PER_DAY ?? '3',
-    10
-);
-const GLOBAL_MAX_PER_DAY = parseInt(
-    process.env.GLOBAL_MAX_PER_DAY ?? '2000',
-    10
-);
-
-const REQUIRE_KEYWORD = (process.env.REQUIRE_KEYWORD || '').toUpperCase(); // e.g., "PASSWORD"
-
-// If you know Advanced Opt-Out is ON and you *still* want to try PASSWORD as rejoin,
-// leave this true. Delivery may still be blocked until START at carrier level.
-const ALLOW_PASSWORD_REJOIN = true;
-
-// --- Constants ---
-const OPT_OUTS = ['STOP', 'STOPALL', 'UNSUBSCRIBE', 'CANCEL', 'END', 'QUIT'];
-const OPT_INS = ['START', 'UNSTOP', 'YES']; // Twilio-standard re-opt in
-const HELP_WORDS = ['HELP', 'INFO'];
-
-function dayKey(date = new Date()) {
-    // Use local-day boundary by removing TZ offset from ISO date
-    return new Date(date.getTime() - date.getTimezoneOffset() * 60000)
-        .toISOString()
-        .slice(0, 10); // YYYY-MM-DD
-}
+import {redis} from '../lib/redis.js';
+import {
+    SITE_PASSWORD,
+    MIN_REPLY_COOLDOWN_MIN,
+    MAX_PER_NUMBER_PER_DAY,
+    GLOBAL_MAX_PER_DAY,
+    REQUIRED_TEXT_KEYWORD,
+    ALLOW_PASSWORD_REJOIN,
+    OPT_OUTS,
+    OPT_INS,
+    HELP_WORDS,
+} from '../lib/config.js';
+import {dayKey, parseFormBody} from '../lib/utils.js';
+import {recordOptOut, clearOptOut, isOptedOut} from '../lib/optout.js';
+import {runUnknownAbuseGuards} from '../lib/abuse.js';
+import {getUnknownThrottleState, recordUnknownReply} from '../lib/throttle.js';
 
 export default async function handler(req, res) {
     const reqId = Math.random().toString(36).slice(2, 8);
@@ -68,209 +47,138 @@ export default async function handler(req, res) {
 
     try {
         if (req.method !== 'POST') {
-            console.warn(`[${reqId}] Non-POST request`, {
-                method: req.method,
-                url: req.url,
-            });
+            console.warn(
+                `[${reqId}] Non-POST request: ${req.method} ${req.url}`
+            );
             return res.status(405).send('Method Not Allowed');
         }
 
-        // Parse application/x-www-form-urlencoded (Twilio default)
-        const rawBody = await new Promise((resolve) => {
-            let data = '';
-            req.on('data', (chunk) => (data += chunk));
-            req.on('end', () => resolve(data));
-        });
-
-        console.log(`[${reqId}] Incoming`, {
-            url: req.url,
-            ct: req.headers['content-type'],
-            xTwilioSig: req.headers['x-twilio-signature']
-                ? '<present>'
-                : '<absent>',
-            rawLen: rawBody.length,
-        });
-
-        const params = Object.fromEntries(new URLSearchParams(rawBody));
+        const params = await parseFormBody(req);
         const from = (params.From || '').trim();
         const body = (params.Body || '').trim();
         const upper = body.toUpperCase();
         const today = dayKey();
-        const sid = params.MessageSid || '';
-
-        console.log(`[${reqId}] Parsed`, {
-            From: from,
-            Body: body,
-            Sid: sid,
-            Day: today,
-        });
-
         const twiml = new TwiML.MessagingResponse();
 
-        // --- STOP / HELP handling & state tracking ---
+        console.log(`[${reqId}] Incoming SMS`, {
+            From: from,
+            Body: body,
+            Today: today,
+        });
+
+        // STOP → record and stay silent
         if (OPT_OUTS.some((k) => upper.includes(k))) {
-            console.log(
-                `[${reqId}] OPT-OUT detected from ${from} via body="${body}"`
-            );
-            // record opt-out; also keep an index set for easy viewing
-            await Promise.all([
-                redis.set(`optout:${from}`, '1', {ex: 60 * 60 * 24 * 365}), // 1 year
-                redis.sadd('optedout:index', from),
-            ]);
-            // With Advanced Opt-Out ON, Twilio auto-replies and blocks future sends
+            console.log(`[${reqId}] STOP/opt-out detected from ${from}`);
+            await recordOptOut(from);
             return res.status(204).end();
         }
 
+        // HELP → reply with help text
         if (HELP_WORDS.some((k) => upper.includes(k))) {
-            console.log(
-                `[${reqId}] HELP received from ${from}; staying silent (Twilio may reply).`
-            );
-            // If you want to always return your HELP text, uncomment next 3 lines:
+            console.log(`[${reqId}] HELP detected from ${from}`);
             twiml.message(
-                'Robyn & Kingsley Wedding Website Password Auto Responder. Contact Kingsley for Assistance. Reply STOP to opt out.'
+                'Robyn & Kingsley Wedding Website Password Responder. Reply STOP to opt out.'
             );
             res.setHeader('Content-Type', 'text/xml');
+            console.log(`[${reqId}] Responding with HELP message`);
             return res.status(200).send(twiml.toString());
-            // return res.status(204).end();
         }
 
-        // --- Re-opt-in handling ---
-        // If they send START/UNSTOP/YES, clear our opt-out record.
-        let clearedOptOut = false;
+        // START → clear opt-out and continue (still require keyword below)
         if (OPT_INS.some((k) => upper.includes(k))) {
-            await Promise.all([
-                redis.del(`optout:${from}`),
-                redis.srem('optedout:index', from),
-            ]);
-            clearedOptOut = true;
-            console.log(
-                `[${reqId}] OPT-IN via START/UNSTOP from ${from} (cleared optout).`
-            );
-            // We still *require* PASSWORD to proceed with the actual password flow below.
-            // So keep going; keyword gate will ensure they include PASSWORD.
+            console.log(`[${reqId}] START/opt-in detected from ${from}`);
+            await clearOptOut(from);
         }
 
-        // If number is opted-out (per our record) and they didn't send a valid rejoin,
-        // consider PASSWORD as a rejoin *if* explicitly allowed.
-        const isOptedOut = await redis.get(`optout:${from}`);
+        // Still opted out?
+        const optedOut = await isOptedOut(from);
         if (
-            isOptedOut &&
-            !clearedOptOut &&
-            ALLOW_PASSWORD_REJOIN &&
-            REQUIRE_KEYWORD &&
-            upper.includes(REQUIRE_KEYWORD)
+            optedOut &&
+            !(
+                ALLOW_PASSWORD_REJOIN &&
+                REQUIRED_TEXT_KEYWORD &&
+                upper.includes(REQUIRED_TEXT_KEYWORD)
+            )
         ) {
-            await Promise.all([
-                redis.del(`optout:${from}`),
-                redis.srem('optedout:index', from),
-            ]);
+            console.log(`[${reqId}] Number is opted-out, ignoring ${from}`);
+            return res.status(204).end();
+        }
+
+        // They sent PASSWORD while opted-out
+        if (optedOut) {
+            console.log(`[${reqId}] PASSWORD rejoin allowed for ${from}`);
+            await clearOptOut(from);
+        }
+
+        // Keyword required to proceed
+        if (REQUIRED_TEXT_KEYWORD && !upper.includes(REQUIRED_TEXT_KEYWORD)) {
             console.log(
-                `[${reqId}] OPT-IN via PASSWORD from ${from} (cleared optout).`
-            );
-            // ⚠️ If Advanced Opt-Out is ON, Twilio/carrier may still block delivery until START.
-            // If you see "21610" errors in Twilio logs, user must send START once.
-        } else if (isOptedOut && !clearedOptOut) {
-            console.log(
-                `[${reqId}] Still opted-out; ignoring message from ${from}.`
+                `[${reqId}] Keyword gate failed. Required="${REQUIRED_TEXT_KEYWORD}", got="${body}"`
             );
             return res.status(204).end();
         }
 
-        // --- Keyword gate (REQUIRED for initial and ongoing handling) ---
-        if (REQUIRE_KEYWORD && !upper.includes(REQUIRE_KEYWORD)) {
-            console.log(
-                `[${reqId}] Keyword gate failed. Required="${REQUIRE_KEYWORD}", got="${body}". 204.`
-            );
-            return res.status(204).end(); // silent -> no outbound SMS cost
-        }
-
-        // --- Whitelist check FIRST (guests bypass throttles) ---
+        // Check Whitelist first
         const isWhitelisted = await redis.sismember('whitelist', from);
-        console.log(`[${reqId}] Whitelist`, {
-            from: from,
-            isWhitelisted,
-        });
-
         if (isWhitelisted) {
+            console.log(`[${reqId}] Whitelisted number: ${from}`);
             twiml.message(`Hi! Here’s the password: ${SITE_PASSWORD}`);
-
-            // Optional: global cap even for guests (usually not needed)
-            // const globalKey = `rl:global:${today}`;
-            // const current = (await redis.get(globalKey)) ?? 0;
-            // if (current >= GLOBAL_MAX_PER_DAY) {
-            //   console.log(`[${reqId}] Global cap hit for WHITELIST (${GLOBAL_MAX_PER_DAY}). 204.`);
-            //   return res.status(204).end();
-            // }
-            // await Promise.all([redis.incr(globalKey), redis.expire(globalKey, 172800)]);
-
             res.setHeader('Content-Type', 'text/xml');
             console.log(
-                `[${reqId}] 200 WHITELIST in ${Date.now() - started}ms`
+                `[${reqId}] Responding with password (WHITELIST) in ${
+                    Date.now() - started
+                }ms`
             );
             return res.status(200).send(twiml.toString());
         }
 
-        // --- Unknown numbers: apply throttles + global cap ---
-        const globalKey = `rl:global:${today}`;
-        const countKey = `rl:num:${from}:${today}:count`;
-        const lastKey = `rl:num:${from}:${today}:last`;
+        // Unknown numbers: run abuse guards
+        const guard = await runUnknownAbuseGuards({from, body, today});
+        if (!guard.allow) {
+            console.log(`[${reqId}] Blocked by abuse guard for ${from}`);
+            return res.status(204).end();
+        }
 
-        const [globalCount, numberCount, lastMs] = await redis.mget(
-            globalKey,
-            countKey,
-            lastKey
-        );
+        // Unknowns Numbers: throttles
+        const {globalKey, countKey, lastKey, globalCount, numberCount, lastMs} =
+            await getUnknownThrottleState({from, today});
+
         console.log(`[${reqId}] Throttle state`, {
-            globalCount: globalCount ?? 0,
-            numberCount: numberCount ?? 0,
-            lastMs: lastMs ?? 0,
+            globalCount,
+            numberCount,
+            lastMs,
         });
 
-        // Global cap (across everyone; protects budget)
-        if ((globalCount ?? 0) >= GLOBAL_MAX_PER_DAY) {
+        if (globalCount >= GLOBAL_MAX_PER_DAY) {
             console.log(
-                `[${reqId}] Global cap reached (${GLOBAL_MAX_PER_DAY}). 204.`
+                `[${reqId}] Global cap reached (${GLOBAL_MAX_PER_DAY})`
             );
             return res.status(204).end();
         }
 
-        // Per-number cooldown + cap (unknowns only)
         const now = Date.now();
-        const last = parseInt(lastMs ?? '0', 10);
-        const minMillis = MIN_REPLY_COOLDOWN_MIN * 60 * 1000;
-
-        if (last && now - last < minMillis) {
-            console.log(
-                `[${reqId}] Cooldown for ${from} ~${Math.ceil(
-                    (minMillis - (now - last)) / 1000
-                )}s left.`
-            );
+        const minMs = MIN_REPLY_COOLDOWN_MIN * 60 * 1000;
+        if (lastMs && now - lastMs < minMs) {
+            console.log(`[${reqId}] Cooldown active for ${from}`);
             return res.status(204).end();
         }
-        if ((numberCount ?? 0) >= MAX_PER_NUMBER_PER_DAY) {
-            console.log(`[${reqId}] Per-number cap reached for ${from}. 204.`);
+        if (numberCount >= MAX_PER_NUMBER_PER_DAY) {
+            console.log(`[${reqId}] Per-number cap reached for ${from}`);
             return res.status(204).end();
         }
 
-        // Fallback for unknowns
+        // Fallback for unknown numbers
         twiml.message(
             'We couldn’t match this number to our guest list. If this is a mistake, please contact Kingsley.'
         );
 
-        // Record cost-bearing reply for throttling (unknowns only)
-        await Promise.all([
-            redis.incr(globalKey),
-            redis.incr(countKey),
-            redis.set(lastKey, String(now)),
-            // 2-day expiry cleans up old counters automatically
-            redis.expire(globalKey, 172800),
-            redis.expire(countKey, 172800),
-            redis.expire(lastKey, 172800),
-        ]);
+        await recordUnknownReply({globalKey, countKey, lastKey, now});
 
         res.setHeader('Content-Type', 'text/xml');
         console.log(
-            `[${reqId}] 200 UNKNOWN Number in ${Date.now() - started}ms`
+            `[${reqId}] Responding with fallback for unknown in ${
+                Date.now() - started
+            }ms`
         );
         return res.status(200).send(twiml.toString());
     } catch (err) {
@@ -278,6 +186,6 @@ export default async function handler(req, res) {
             message: err?.message,
             stack: err?.stack,
         });
-        return res.status(500).send(err ? err.message : 'Server Error');
+        return res.status(500).send(err?.message || 'Server Error');
     }
 }
