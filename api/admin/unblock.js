@@ -3,12 +3,12 @@
 //   https://<your-app>.vercel.app/api/admin/unblock?phone=555-123-4567&token=YOUR_TOKEN
 //
 // Env required:
-//   ADMIN_UNBLOCK_TOKEN=some-long-random-string
+//   ADMIN_TOKEN=some-long-random-string
 
 import {redis} from '../../lib/redis.js';
 import {KEYS} from '../../lib/config.js';
 
-const ADMIN_TOKEN = process.env.ADMIN_UNBLOCK_TOKEN;
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
 
 // Normalize common US formats to E.164 +1XXXXXXXXXX
 function normalizeToE164US(input) {
@@ -55,7 +55,7 @@ export default async function handler(req, res) {
 
     try {
         if (!ADMIN_TOKEN) {
-            console.error(`[${reqId}] Missing ADMIN_UNBLOCK_TOKEN env`);
+            console.error(`[${reqId}] Missing ADMIN_TOKEN env`);
             return res.status(401).send('Unauthorized');
         }
 
