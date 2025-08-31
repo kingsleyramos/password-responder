@@ -1,0 +1,15 @@
+{
+    "name": "tools",
+    "version": "1.0.0",
+    "type": "module",
+    "private": true,
+    "scripts": {
+        "unblock:one": "node bulk-admin.mjs unblock",
+        "unblock:file": "node bulk-admin.mjs unblock --file",
+        "wl:add": "node bulk-admin.mjs whitelist-add",
+        "wl:rm": "node bulk-admin.mjs whitelist-remove"
+    },
+    "dependencies": {
+        "dotenv": "^17.2.1"
+    }
+}

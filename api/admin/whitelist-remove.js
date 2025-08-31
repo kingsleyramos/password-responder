@@ -1,7 +1,7 @@
 import {redis} from '../../lib/redis.js';
 import {KEYS} from '../../lib/config.js';
 
-const ADMIN_TOKEN = process.env.ADMIN_UNBLOCK_TOKEN || process.env.ADMIN_TOKEN;
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
 
 // Strict E.164 (+1XXXXXXXXXX) validator
 function assertE164US(input) {
@@ -22,9 +22,7 @@ export default async function handler(req, res) {
 
     try {
         if (!ADMIN_TOKEN) {
-            console.error(
-                `[${reqId}] Missing ADMIN_UNBLOCK_TOKEN/ADMIN_TOKEN env`
-            );
+            console.error(`[${reqId}] Missing ADMIN_TOKEN env`);
             return res.status(401).send('Unauthorized');
         }
 
