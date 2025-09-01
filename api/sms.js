@@ -19,17 +19,25 @@ import {dayKey, parseFormBody} from '../lib/utils.js';
 import {recordOptOut, clearOptOut, isOptedOut} from '../lib/optout.js';
 import {runUnknownAbuseGuards} from '../lib/abuse.js';
 import {getUnknownThrottleState, recordUnknownReply} from '../lib/throttle.js';
+import {isTokenValid} from '../lib/auth-utils.js';
 
 export default async function handler(req, res) {
     const reqId = Math.random().toString(36).slice(2, 8);
     const started = Date.now();
 
     try {
+        if (!isTokenValid(req, process.env.SMS_TOKEN)) {
+            console.warn(
+                `[${reqId}] Unauthorized attempt with token="${req.query.token}"`
+            );
+            return res.status(401).end();
+        }
+
         if (req.method !== 'POST') {
             console.warn(
                 `[${reqId}] Non-POST request: ${req.method} ${req.url}`
             );
-            return res.status(405);
+            return res.status(405).end();
         }
 
         const params = await parseFormBody(req);
