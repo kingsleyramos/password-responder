@@ -29,7 +29,7 @@ export default async function handler(req, res) {
             console.warn(
                 `[${reqId}] Non-POST request: ${req.method} ${req.url}`
             );
-            return res.status(405).send('Method Not Allowed');
+            return res.status(405);
         }
 
         const params = await parseFormBody(req);
@@ -116,7 +116,9 @@ export default async function handler(req, res) {
             );
             res.setHeader('Content-Type', 'text/xml');
             console.log(
-                `[${reqId}] 200 WHITELIST in ${Date.now() - started}ms`
+                `[${reqId}] 200 Allowed ${fromNumber} in WHITELIST in ${
+                    Date.now() - started
+                }ms`
             );
             return res.status(200).send(twiml.toString());
         }
@@ -187,7 +189,7 @@ export default async function handler(req, res) {
 
         res.setHeader('Content-Type', 'text/xml');
         console.log(
-            `[${reqId}] 200 UNKNOWN (fallback) in ${Date.now() - started}ms`
+            `[${reqId}] 200 Unknown phone number in ${Date.now() - started}ms`
         );
         return res.status(200).send(twiml.toString());
     } catch (err) {
