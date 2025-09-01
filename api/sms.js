@@ -30,14 +30,14 @@ export default async function handler(req, res) {
             console.warn(
                 `[${reqId}] Unauthorized attempt with token="${req.query.token}"`
             );
-            return res.status(401).send('');
+            return res.status(401).end();
         }
 
         if (req.method !== 'POST') {
             console.warn(
                 `[${reqId}] Non-POST request: ${req.method} ${req.url}`
             );
-            return res.status(405);
+            return res.status(405).end();
         }
 
         const params = await parseFormBody(req);

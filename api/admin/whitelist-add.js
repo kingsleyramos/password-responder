@@ -11,7 +11,7 @@ export default async function handler(req, res) {
     try {
         if (!ADMIN_TOKEN) {
             console.error(`[${reqId}] Missing ADMIN_TOKEN env`);
-            return res.status(401);
+            return res.status(401).end();
         }
 
         const isGet = req.method === 'GET';
@@ -47,11 +47,11 @@ export default async function handler(req, res) {
             console.warn(
                 `[${reqId}] Unauthorized attempt with token="${tokenParam}"`
             );
-            return res.status(401).send('Unauthorized');
+            return res.status(401).end();
         }
         if (!phoneParam) {
             console.warn(`[${reqId}] Missing ?phone param`);
-            return res.status(400).json({ok: false, error: 'Missing ?phone'});
+            return res.status(400).send('ERROR: Missing ?phone');
         }
 
         const phone = assertE164US(phoneParam);

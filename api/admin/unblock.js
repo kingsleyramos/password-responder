@@ -41,16 +41,14 @@ export default async function handler(req, res) {
     try {
         if (!ADMIN_TOKEN) {
             console.error(`[${reqId}] Missing ADMIN_TOKEN env`);
-            return res.status(401);
+            return res.status(401).end();
         }
 
         const isGet = req.method === 'GET';
         const isPost = req.method === 'POST';
         if (!isGet && !isPost) {
             console.warn(`[${reqId}] Unsupported method: ${req.method}`);
-            return res
-                .status(405)
-                .json({ok: false, error: 'Method Not Allowed'});
+            return res.status(405).end();
         }
 
         let phoneParam, tokenParam;
@@ -77,11 +75,11 @@ export default async function handler(req, res) {
             console.warn(
                 `[${reqId}] Unauthorized attempt with token="${tokenParam}"`
             );
-            return res.status(401);
+            return res.status(401).end();
         }
         if (!phoneParam) {
             console.warn(`[${reqId}] Missing ?phone param`);
-            return res.status(400).json({error: 'Missing ?phone'});
+            return res.status(400).send('ERROR: Missing ?phone');
         }
 
         const phone = normalizeToE164US(phoneParam);

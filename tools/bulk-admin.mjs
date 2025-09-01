@@ -194,14 +194,7 @@ Examples:
         }
     }
 
-    console.log(
-        `[bulk-admin] action=${action} total=${
-            prepared.length
-        } concurrency=${Math.max(
-            1,
-            Number.isFinite(concurrency) ? concurrency : 5
-        )} dryRun=${dryRun}`
-    );
+    console.log(`[bulk-admin] action=${action} total=${prepared.length}`);
 
     if (dryRun) {
         console.log(prepared.join('\n'));
