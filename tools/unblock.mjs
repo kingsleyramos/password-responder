@@ -25,27 +25,7 @@
 import 'dotenv/config';
 import {redis} from '../lib/redis.js';
 import {KEYS} from '../lib/config.js';
-
-function normalizeToE164US(input) {
-    if (!input) throw new Error('No phone number provided');
-    const trimmed = String(input).trim();
-
-    // Already E.164?
-    if (/^\+1\d{10}$/.test(trimmed)) return trimmed;
-
-    // Strip non-digits
-    const digits = trimmed.replace(/\D/g, '');
-
-    // 10 digits -> assume US, add +1
-    if (digits.length === 10) return `+1${digits}`;
-
-    // 11 digits starting with 1 -> add +
-    if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-
-    throw new Error(
-        `Invalid US number format: "${input}". Expected 10 digits, 11 digits starting with 1, or +1XXXXXXXXXX.`
-    );
-}
+import {normalizeToE164US} from '../../lib/utils.js';
 
 // Delete keys matching a pattern, supporting both scanIterator (new) and SCAN loop (old)
 async function deleteByPattern(pattern, count = 200) {

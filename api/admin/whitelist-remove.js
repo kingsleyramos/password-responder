@@ -1,18 +1,8 @@
 import {redis} from '../../lib/redis.js';
 import {KEYS} from '../../lib/config.js';
+import {assertE164US} from '../../lib/utils.js';
 
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
-
-// Strict E.164 (+1XXXXXXXXXX) validator
-function assertE164US(input) {
-    const v = String(input || '').trim();
-    if (!/^\+1\d{10}$/.test(v)) {
-        throw new Error(
-            `Invalid format: "${input}". Expected E.164 US format: +1XXXXXXXXXX`
-        );
-    }
-    return v;
-}
 
 export default async function handler(req, res) {
     const reqId = Math.random().toString(36).slice(2, 8);
@@ -59,7 +49,7 @@ export default async function handler(req, res) {
             console.warn(
                 `[${reqId}] Unauthorized attempt with token="${tokenParam}"`
             );
-            return res.status(401).send('Unauthorized');
+            return res.status(401);
         }
         if (!phoneParam) {
             console.warn(`[${reqId}] Missing ?phone param`);
