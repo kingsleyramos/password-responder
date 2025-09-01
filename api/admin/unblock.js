@@ -7,24 +7,9 @@
 
 import {redis} from '../../lib/redis.js';
 import {KEYS} from '../../lib/config.js';
+import {normalizeToE164US} from '../../lib/utils.js';
 
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
-
-// Normalize common US formats to E.164 +1XXXXXXXXXX
-function normalizeToE164US(input) {
-    if (!input) throw new Error('No phone number provided');
-    const trimmed = String(input).trim();
-
-    if (/^\+1\d{10}$/.test(trimmed)) return trimmed; // already E.164
-
-    const digits = trimmed.replace(/\D/g, '');
-    if (digits.length === 10) return `+1${digits}`; // 10-digit US
-    if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`; // 1 + 10
-
-    throw new Error(
-        `Invalid US number format: "${input}". Expected 10 digits, 11 digits starting with 1, or +1XXXXXXXXXX.`
-    );
-}
 
 // Delete keys by SCAN (works on all @upstash/redis versions)
 async function deleteByPattern(pattern, count = 200) {
