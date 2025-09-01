@@ -30,7 +30,7 @@ export default async function handler(req, res) {
             console.warn(
                 `[${reqId}] Unauthorized attempt with token="${req.query.token}"`
             );
-            return res.status(401);
+            return res.status(401).send('');
         }
 
         if (req.method !== 'POST') {
