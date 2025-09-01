@@ -111,7 +111,9 @@ export default async function handler(req, res) {
             console.log(
                 `[${reqId}] Whitelisted ${fromNumber} → sending password`
             );
-            twiml.message(`Hi! Here’s the password: ${SITE_PASSWORD}`);
+            twiml.message(
+                `Hi! Here’s the password to robyn-kingsley.wedding: ${SITE_PASSWORD}`
+            );
             res.setHeader('Content-Type', 'text/xml');
             console.log(
                 `[${reqId}] 200 WHITELIST in ${Date.now() - started}ms`
