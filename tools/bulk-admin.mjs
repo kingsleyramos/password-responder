@@ -22,7 +22,6 @@
  */
 import dotenv from 'dotenv';
 dotenv.config({path: '../.env'});
-import {normalizeToE164US} from '../lib/utils.js';
 
 const BASE = process.env.ADMIN_BASE_URL;
 const TOKEN = process.env.ADMIN_TOKEN;
@@ -62,6 +61,22 @@ const filePath = getFlag('file', null);
 const dryRun = !!getFlag('dry-run', false);
 const concurrency = Number(getFlag('concurrency', 5));
 const trailing = args.slice(1).filter((a) => !a.startsWith('--')); // direct phone args
+
+/** Normalize common US formats to E.164 +1XXXXXXXXXX */
+function normalizeToE164US(input) {
+    if (!input) throw new Error('No phone number provided');
+    const trimmed = String(input).trim();
+
+    if (/^\+1\d{10}$/.test(trimmed)) return trimmed; // already E.164
+
+    const digits = trimmed.replace(/\D/g, ''); // strip non-digits ((), -, spaces, dots)
+    if (digits.length === 10) return `+1${digits}`; // 10-digit US
+    if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`; // 1 + 10
+
+    throw new Error(
+        `Invalid US number format: "${input}". Expected 10 digits, 11 digits starting with 1, or +1XXXXXXXXXX.`
+    );
+}
 
 /** parse file/args blob into unique list (order preserved) */
 function parsePhonesBlob(blob) {
